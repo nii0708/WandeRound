@@ -22,6 +22,8 @@ from tools.osm import (
 from tools.route import get_cluster, get_distance_matrix, get_route
 from shapely.geometry import LineString
 from dotenv import load_dotenv
+import time
+
 
 load_dotenv()
 
@@ -347,15 +349,17 @@ def get_code(state: AgentState) -> AgentState:
     try:
         # code =  llm.invoke(code_prompt)
         print("params : \n", geopandas_link, column_list, featureValue, question)
+        time.sleep(0.1)
         code = llm.invoke(
             code_creation_prompt.format_messages(
                 geopandas_link=geopandas_link,
-                column_list=column_list,
-                featureValue=featureValue,
+                column_list=", ".join(column_list),
+                featureValue=", ".join(featureValue),
                 question=question,
             )
         )
-        # print("code.content : \n", code)
+        print("PASS")
+        print("code.content : \n", code)
         code_resp = get_exec_printed_result(process_overpass(code.content))
         return {
             "codeResult": code_resp,
@@ -363,9 +367,13 @@ def get_code(state: AgentState) -> AgentState:
             "codeStatus": "PASS",
         }
     except Exception as e:
-        print(e)
-        # return {"error": e, "stepCodes": code, "codeStatus": "ERROR"}
-        return {"error": e, "codeStatus": "ERROR", "stepCodes": [None]}
+        print("err : ", e)
+        print("code.content : \n", code)
+        return {
+            "error": e,
+            "codeStatus": "ERROR",
+            "stepCodes": [m for m in code if isinstance(m, BaseMessage)],
+        }
 
 
 def eval_code(state: AgentState) -> AgentState:
@@ -377,6 +385,7 @@ def eval_code(state: AgentState) -> AgentState:
         return {"stepsState": step}
     elif status == "ERROR" and evalState < 3:
         # fix the step etc ....
+        print("ERRR")
         err = state.get("err", "")
         curr_state = state.get("stepsState", None)
         step = state.get("steps", None)
@@ -461,6 +470,51 @@ class AgentGraph:
         self.graph = self._create_graph()
 
     def _create_graph(self):
+        # # Build the graph
+        # workflow = StateGraph(AgentState)
+
+        # # Add nodes
+        # workflow.add_node("process_message", process_message)
+        # workflow.add_node("usual", usual)
+
+        # workflow.add_node("extract_location", extract_location)
+        # workflow.add_node("geocode_location", geocode_location)
+        # workflow.add_node("generate_response", generate_response)
+
+        # workflow.add_node("execute_code", execute_code)
+        # workflow.add_node("get_code", get_code)
+        # workflow.add_node("eval_code", eval_code)
+        # # workflow.add_node("router", router)
+        # workflow.add_node("get_summary", get_summary)
+
+        # # Add conditional edges
+        # workflow.add_conditional_edges(
+        #     "process_message",
+        #     lambda state: "extract_location" if state.get("trip") else "usual",
+        # )
+
+        # workflow.add_conditional_edges(
+        #     "extract_location",
+        #     lambda state: "generate_response"
+        #     if state.get("error")
+        #     else "geocode_location",
+        # )
+        # workflow.add_edge("geocode_location", "generate_response")
+        # workflow.add_edge("generate_response", "execute_code")
+        # workflow.add_conditional_edges(
+        #     "execute_code",
+        #     lambda state: "get_code" if state.get("overpassStatus") else "usual",
+        # )
+        # # workflow.add_edge("execute_code", "get_code")
+        # workflow.add_edge("get_code", "eval_code")
+        # workflow.add_conditional_edges("eval_code", router)
+
+        # workflow.add_edge("get_summary", END)
+        # workflow.add_edge("usual", END)
+
+        # # Set the entry point
+        # workflow.set_entry_point("process_message")
+
         # Build the graph
         workflow = StateGraph(AgentState)
 
@@ -483,13 +537,8 @@ class AgentGraph:
             "process_message",
             lambda state: "extract_location" if state.get("trip") else "usual",
         )
+        workflow.add_edge("extract_location", "geocode_location")
 
-        workflow.add_conditional_edges(
-            "extract_location",
-            lambda state: "generate_response"
-            if state.get("error")
-            else "geocode_location",
-        )
         workflow.add_edge("geocode_location", "generate_response")
         workflow.add_edge("generate_response", "execute_code")
         workflow.add_conditional_edges(
