@@ -8,6 +8,7 @@ fast_tsp
 scikit-learn
 langchain_google_genai
 langchain_core
+langchain
 langgraph
 folium
 matplotlib

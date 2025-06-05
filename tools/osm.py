@@ -21,10 +21,12 @@ def get_exec_printed_result(code_string):
     old_stdout = sys.stdout
     redirected_output = io.StringIO()
     sys.stdout = redirected_output
-
+    print("code_string :\n", code_string)
     try:
+        print("get_exec_printed_result: EXEC")
         exec(code_string)
     except Exception as e:
+        print("get_exec_printed_result: ERR")
         # You might want to handle exceptions from the executed code
         # For now, we'll just print them to the *original* stdout
         # or capture them in a separate stream if needed.
@@ -53,7 +55,10 @@ def get_json(query):
 
 
 def process_overpass(response):
-    return "\n".join(response.splitlines()[1:-1])
+    print("response :\n", response)
+    cleaned_resp = "\n".join(response.splitlines()[1:-1])
+    print("cleaned_resp :\n", cleaned_resp)
+    return cleaned_resp
 
 
 def get_osm_id_from_nominatim(place_name):

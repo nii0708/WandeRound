@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, TypedDict, Tuple, Any, Annotated
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, StateGraph
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from pydantic import BaseModel, Field
 from typing import List
 import uuid
@@ -36,6 +37,7 @@ llm = ChatGoogleGenerativeAI(
     max_tokens=None,
     timeout=None,
     max_retries=2,
+    callbacks=[StreamingStdOutCallbackHandler()],
     # other params...
 )
 
@@ -57,6 +59,7 @@ class AgentState(TypedDict):
     codeResult: Annotated[list[BaseMessage], add_messages]
     codeStatus: str
     evalState: int
+    evalCode: str
     geopandasColumn: GeoColumn
     overpassInstructions: List[str]
     overpassResponses: List[str]
@@ -345,7 +348,7 @@ def get_code(state: AgentState) -> AgentState:
             ("human", "create code to answer: {question}"),
         ]
     )
-
+    # print("params : \n", geopandas_link, column_list, featureValue, question)
     try:
         # code =  llm.invoke(code_prompt)
         print("params : \n", geopandas_link, column_list, featureValue, question)
@@ -358,17 +361,42 @@ def get_code(state: AgentState) -> AgentState:
                 question=question,
             )
         )
-        print("PASS")
-        print("code.content : \n", code)
-        code_resp = get_exec_printed_result(process_overpass(code.content))
+        # code = None
+        # print("get_code : ", code.content)
+        # code_resp = get_exec_printed_result(process_overpass(code.content))
         return {
-            "codeResult": code_resp,
+            # "codeResult": code_resp,
             "stepCodes": code.content,
             "codeStatus": "PASS",
         }
     except Exception as e:
-        print("err : ", e)
-        print("code.content : \n", code)
+        print("get_code ERR : \n", e)
+        # if code is None:
+        return {
+            "error": "No code generated",
+            "codeStatus": "ERROR",
+            "stepCodes": "NO CODE GENERATED",
+        }
+    # else:
+
+
+def execute_python(state: AgentState) -> AgentState:
+    evalState = state.get("evalState", 0)
+    step = state.get("stepsState", -3)
+    try:
+        print(
+            "execute_python --------------",
+        )
+        print("evalState : ", evalState)
+        print("step : ", step)
+        code = state.get("stepCodes")[-1]
+        print("code \n ", type(code))
+        print("code \n ", code)
+        code_resp = get_exec_printed_result(process_overpass(code))
+        print("CHECK")
+        return {"codeResult": code_resp, "codeStatus": "PASS", "stepsState": step + 1}
+    except Exception as e:
+        print("code : \n", code)
         return {
             "error": e,
             "codeStatus": "ERROR",
@@ -378,37 +406,92 @@ def get_code(state: AgentState) -> AgentState:
 
 def eval_code(state: AgentState) -> AgentState:
     evalState = state.get("evalState", 0)
+    stepsState = state.get("stepsState", -3)
+
     status = state.get("codeStatus", "PASS")
-    step = state.get("stepsState", -3)
+
+    print("eval_code ------------------------------------------------------------")
+
     if status == "PASS":
-        step = step + 1
-        return {"stepsState": step}
+        print("eval_code: PASS")
+        # stepsState = stepsState + 1
+        code = state.get("stepCodes")[-1]
+
+        state["stepCodes"][-1] = code.content
+        print("PASS-code : \n", code.content)
+        print("PASS-state['stepCodes'][-1] : \n", state["stepCodes"][-1])
+        return {"stepsState": stepsState}
     elif status == "ERROR" and evalState < 3:
         # fix the step etc ....
-        print("ERRR")
+
+        print("eval_code: ERRR")
+        print("eval_code - stepsState : ", stepsState)
         err = state.get("err", "")
+        print("eval_code - err : ", err)
+        geopandas_link = state.get("geopandasData", None)
+
         curr_state = state.get("stepsState", None)
-        step = state.get("steps", None)
-        codes = state.get("stepCodes", "")
+        step = state.get("steps", [])
+        codes = state.get("stepCodes", [])
         question = step[curr_state]
         code = codes[-1]
-        fix_prompt = f"""
-        this question {question} create python code :
-        {code} that return this {err} when executed. 
-        
-        Fix the code such that it will return the answer to the question
-        """
-        fix_code = llm.invoke(fix_prompt)
+        fix_prompt_template = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """
+                You are an expert at geopandas and want to fix the python code : {code}  
+                that return this {err} when executed.
+                to answer this question: {question}  
+                 
+                
+                Fix the python code such that it will return the code to answer to the question
+                Follow this rules:
+                * Do not make any comments in the code.
+                * Make the code as concise as possible.
+                * use already existed geopandas data: {geopandas_link}
+                """,
+                ),
+                ("human", "fix the {code} code to answer: {question}"),
+            ]
+        )
+        # fix_prompt = f"""
+        # this question: {question}
+        # create python code : {code}
+        # that return this {err} when executed.
+
+        # Fix the python code such that it will return the code to answer to the question
+        # """
+        fix_code = llm.invoke(
+            fix_prompt_template.format_messages(
+                geopandas_link=geopandas_link,
+                question=question,
+                code=code,
+                err=err,
+            )
+        )
+        print("fix_code : \n", fix_code)
+        print("fix_code.content : \n", fix_code.content)
         evalState = evalState + 1
-        print('state["stepCodes"] : ', state["stepCodes"])
-        state["stepCodes"].insert(step, fix_code.content)
+        print('state["stepCodes"] : ', state["stepCodes"][-1])
+        state["stepCodes"][-1] = fix_code.content
+        # print('state["stepCodes"] : \n', state["stepCodes"])
         return {"evalState": evalState}
 
 
 def router(state):
-    if state.get("evalState", 0) >= 3 or state.get("stepsState", -3) == -1:
+    status = state.get("codeStatus", "PASS")
+    if state.get("evalState", 0) >= 3:
+        print("to USUAL")
+        return "usual"
+    elif state.get("stepsState", -3) == -1:
+        print("to GET_SUMMARY")
         return "get_summary"
+    elif status == "ERROR":
+        print("to EVAL_CODE")
+        return "eval_code"
     else:
+        print("to GET_CODE")
         return "get_code"
 
 
@@ -470,51 +553,6 @@ class AgentGraph:
         self.graph = self._create_graph()
 
     def _create_graph(self):
-        # # Build the graph
-        # workflow = StateGraph(AgentState)
-
-        # # Add nodes
-        # workflow.add_node("process_message", process_message)
-        # workflow.add_node("usual", usual)
-
-        # workflow.add_node("extract_location", extract_location)
-        # workflow.add_node("geocode_location", geocode_location)
-        # workflow.add_node("generate_response", generate_response)
-
-        # workflow.add_node("execute_code", execute_code)
-        # workflow.add_node("get_code", get_code)
-        # workflow.add_node("eval_code", eval_code)
-        # # workflow.add_node("router", router)
-        # workflow.add_node("get_summary", get_summary)
-
-        # # Add conditional edges
-        # workflow.add_conditional_edges(
-        #     "process_message",
-        #     lambda state: "extract_location" if state.get("trip") else "usual",
-        # )
-
-        # workflow.add_conditional_edges(
-        #     "extract_location",
-        #     lambda state: "generate_response"
-        #     if state.get("error")
-        #     else "geocode_location",
-        # )
-        # workflow.add_edge("geocode_location", "generate_response")
-        # workflow.add_edge("generate_response", "execute_code")
-        # workflow.add_conditional_edges(
-        #     "execute_code",
-        #     lambda state: "get_code" if state.get("overpassStatus") else "usual",
-        # )
-        # # workflow.add_edge("execute_code", "get_code")
-        # workflow.add_edge("get_code", "eval_code")
-        # workflow.add_conditional_edges("eval_code", router)
-
-        # workflow.add_edge("get_summary", END)
-        # workflow.add_edge("usual", END)
-
-        # # Set the entry point
-        # workflow.set_entry_point("process_message")
-
         # Build the graph
         workflow = StateGraph(AgentState)
 
@@ -527,6 +565,7 @@ class AgentGraph:
         workflow.add_node("generate_response", generate_response)
 
         workflow.add_node("execute_code", execute_code)
+        workflow.add_node("execute_python", execute_python)
         workflow.add_node("get_code", get_code)
         workflow.add_node("eval_code", eval_code)
         # workflow.add_node("router", router)
@@ -545,9 +584,10 @@ class AgentGraph:
             "execute_code",
             lambda state: "get_code" if state.get("overpassStatus") else "usual",
         )
-        # workflow.add_edge("execute_code", "get_code")
+
         workflow.add_edge("get_code", "eval_code")
-        workflow.add_conditional_edges("eval_code", router)
+        workflow.add_edge("eval_code", "execute_python")
+        workflow.add_conditional_edges("execute_python", router)
 
         workflow.add_edge("get_summary", END)
         workflow.add_edge("usual", END)

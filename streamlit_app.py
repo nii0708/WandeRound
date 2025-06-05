@@ -258,7 +258,8 @@ def main():
                             folium_static(map, width=800)
                         else:
                             colormap = cm.linear.Set1_09.scale(
-                                0, color_length + 1
+                                0,
+                                color_length,  # + 1
                             ).to_step(color_length)
                             map = gdf[gdf["clust"] > -1].explore(
                                 column="clust",
@@ -359,7 +360,7 @@ def main():
                                         stepCodes = value.get(
                                             "stepCodes"
                                         )  # thinking, code
-                                        print("stepCodes : ")
+                                        # print("stepCodes : ")
                                         displayed_steps += (
                                             ["\n💭 Creating python codes:\n"]
                                             + [stepCodes]
@@ -383,6 +384,7 @@ def main():
                             "🤔 **Show Thinking Process**", expanded=False
                         ):
                             for step in thinking_steps:
+                                print("step : \n", step)
                                 if step.startswith("\n"):
                                     st.markdown(step)
                                 elif step.startswith("overpass") or step.startswith(
@@ -414,7 +416,8 @@ def main():
                                 folium_static(map, width=800)
                             else:
                                 colormap = cm.linear.Set1_09.scale(
-                                    0, color_length + 1
+                                    0,
+                                    color_length,  # + 1
                                 ).to_step(color_length)
                                 map = gdf[gdf["clust"] > -1].explore(
                                     column="clust",
