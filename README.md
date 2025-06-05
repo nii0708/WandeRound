@@ -2,7 +2,7 @@
 
 Wanderound Demo Video
 
-[![Watch the Demo Video](https://img.youtube.com/vi/MufzzvxLumY/hqdefault.jpg)](https://www.youtube.com/watch?v=MufzzvxLumY)
+[![Watch the Demo Video](https://img.youtube.com/vi/_36AZHRPALw/hqdefault.jpg)](https://www.youtube.com/watch?v=_36AZHRPALw)
 
 ## Start the project
 
