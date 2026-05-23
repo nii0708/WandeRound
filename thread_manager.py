@@ -41,6 +41,7 @@ class ChatbotThreadManager:
         content: str,
         thinking_steps: Optional[list] = None,
         geopandas_link: Optional[str] = None,
+        map_labels: Optional[dict] = None,
     ):
         if thread_id not in self.threads:
             return
@@ -53,6 +54,8 @@ class ChatbotThreadManager:
             msg["thinking_steps"] = thinking_steps
         if geopandas_link:
             msg["geopandas_link"] = geopandas_link
+        if map_labels:
+            msg["map_labels"] = map_labels
         self.threads[thread_id]["messages"].append(msg)
         self.threads[thread_id]["updated_at"] = datetime.now().isoformat()
         self.save_threads()

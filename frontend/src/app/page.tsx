@@ -107,6 +107,7 @@ export default function Home() {
     let finalContent = "";
     let finalThinking: string[] = [];
     let geodataFile: string | null = null;
+    let mapLabels: import("@/types").MapLabels | null = null;
 
     try {
       const backendUrl =
@@ -173,11 +174,13 @@ export default function Home() {
 
             if (event.type === "map") {
               geodataFile = event.file ?? null;
+              mapLabels = event.labels ?? null;
               setMessages((prev) => {
                 const msgs = [...prev];
                 msgs[msgs.length - 1] = {
                   ...msgs[msgs.length - 1],
                   geojson: event.geojson,
+                  map_labels: event.labels ?? undefined,
                 };
                 return msgs;
               });
@@ -211,6 +214,7 @@ export default function Home() {
 
             if (event.type === "done") {
               finalContent = event.content || finalContent;
+              if (event.labels) mapLabels = event.labels;
               await fetch(`/api/threads/${currentThreadId}/messages`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -219,6 +223,7 @@ export default function Home() {
                   content: finalContent,
                   thinking_steps: finalThinking,
                   geopandas_link: geodataFile,
+                  map_labels: mapLabels,
                 }),
               });
               await fetchThreads();

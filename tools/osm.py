@@ -81,6 +81,45 @@ def get_osm_id_from_nominatim(place_name):
         return None, f"Error fetching data: {str(e)}"
 
 
+def reverse_geocode(lat, lon, language="en"):
+    """
+    Return a short area name (suburb/neighbourhood/city_district/village/...)
+    for the given coordinates using Nominatim. Returns None if nothing useful
+    is found or the request fails.
+    """
+    url = (
+        "https://nominatim.openstreetmap.org/reverse"
+        f"?lat={lat}&lon={lon}&format=json&zoom=14&addressdetails=1"
+        f"&accept-language={language}"
+    )
+    headers = {"User-Agent": "WandeRound/1.0"}
+
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+    except requests.exceptions.RequestException:
+        return None
+
+    address = data.get("address", {}) if isinstance(data, dict) else {}
+    # Prefer narrowest meaningful area first
+    for key in (
+        "neighbourhood",
+        "suburb",
+        "quarter",
+        "city_district",
+        "village",
+        "town",
+        "hamlet",
+        "city",
+        "county",
+    ):
+        value = address.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def process_osm_data(data):
     """
     Process OpenStreetMap data from an Overpass API JSON file and create GeoDataFrames.
@@ -336,7 +375,12 @@ def get_gdf(json_data):
                 "waterway",
                 "name",
                 "building",
+                "addr:street",
+                "addr:housenumber",
                 "addr:city",
+                "addr:postcode",
+                "addr:state",
+                "addr:country",
                 "building:use",
                 "amenity",
                 "smoking",

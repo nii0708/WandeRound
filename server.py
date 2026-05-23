@@ -6,13 +6,17 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from app import AgentGraph
 from thread_manager import ChatbotThreadManager
+
+# Max number of recent messages from a thread to inject as conversation context.
+HISTORY_LIMIT = 20
 
 api = FastAPI(title="WandeRound API")
 api.add_middleware(
@@ -31,14 +35,42 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-async def _run_agent(message: str):
+def _load_history_as_messages(thread_id: str, latest_user_message: str) -> List[BaseMessage]:
+    """Load thread history and return it as LangChain messages, capped to HISTORY_LIMIT."""
+    raw = _threads.get_thread_messages(thread_id) or []
+    converted: List[BaseMessage] = []
+    for m in raw:
+        role = m.get("role")
+        content = m.get("content", "")
+        if not content:
+            continue
+        if role == "user":
+            converted.append(HumanMessage(content=content))
+        elif role == "assistant":
+            converted.append(AIMessage(content=content))
+
+    # Frontend saves the new user message before calling /chat/stream, so it
+    # should already be the last entry. If not (e.g. save failed), append it.
+    if not converted or not (
+        isinstance(converted[-1], HumanMessage)
+        and converted[-1].content == latest_user_message
+    ):
+        converted.append(HumanMessage(content=latest_user_message))
+
+    if len(converted) > HISTORY_LIMIT:
+        converted = converted[-HISTORY_LIMIT:]
+    return converted
+
+
+async def _run_agent(thread_id: str, message: str):
     state = {
-        "messages": [{"role": "user", "content": message}],
+        "messages": _load_history_as_messages(thread_id, message),
         "location": None,
         "geocode_data": None,
         "error": None,
     }
     geopandas_file: Optional[str] = None
+    map_labels: Optional[dict] = None
     final_response = ""
     thinking_steps: list = []
     streamed_response = ""
@@ -86,6 +118,9 @@ async def _run_agent(message: str):
                 if "geopandasData" in output:
                     geopandas_file = output.get("geopandasData")
 
+                if "mapLabels" in output:
+                    map_labels = output.get("mapLabels")
+
                 if "finalResponse" in output:
                     resp = output.get("finalResponse")
                     if hasattr(resp, "content"):
@@ -110,12 +145,23 @@ async def _run_agent(message: str):
         try:
             gdf = gpd.read_file(geopandas_file).to_crs(epsg=4326)
             geojson = json.loads(gdf.to_json())
-            yield _sse({"type": "map", "geojson": geojson, "file": geopandas_file})
+            yield _sse({
+                "type": "map",
+                "geojson": geojson,
+                "file": geopandas_file,
+                "labels": map_labels,
+            })
         except Exception as e:
             print(f"Map conversion error: {e}")
 
     yield _sse({"type": "response", "content": final_response})
-    yield _sse({"type": "done", "content": final_response, "thinking": thinking_steps, "file": geopandas_file})
+    yield _sse({
+        "type": "done",
+        "content": final_response,
+        "thinking": thinking_steps,
+        "file": geopandas_file,
+        "labels": map_labels,
+    })
 
 
 # ── Request models ────────────────────────────────────────────────────────────
@@ -135,6 +181,7 @@ class AddMessageReq(BaseModel):
     content: str
     thinking_steps: Optional[list] = None
     geopandas_link: Optional[str] = None
+    map_labels: Optional[dict] = None
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -142,7 +189,7 @@ class AddMessageReq(BaseModel):
 @api.post("/api/chat/stream")
 def chat_stream(req: ChatReq):
     return StreamingResponse(
-        _run_agent(req.message),
+        _run_agent(req.thread_id, req.message),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -166,7 +213,14 @@ def get_messages(thread_id: str):
 
 @api.post("/api/threads/{thread_id}/messages")
 def add_message(thread_id: str, req: AddMessageReq):
-    _threads.add_message(thread_id, req.role, req.content, req.thinking_steps, req.geopandas_link)
+    _threads.add_message(
+        thread_id,
+        req.role,
+        req.content,
+        req.thinking_steps,
+        req.geopandas_link,
+        req.map_labels,
+    )
     return {"ok": True}
 
 

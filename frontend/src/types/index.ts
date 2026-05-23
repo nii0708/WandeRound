@@ -1,3 +1,16 @@
+export interface MapLabels {
+  ui?: {
+    name?: string;
+    type?: string;
+    address?: string;
+    cluster?: string;
+    unclustered?: string;
+    legendTitle?: string;
+    noName?: string;
+  };
+  clusters?: Record<string, string>;
+}
+
 export interface Message {
   role: "user" | "assistant";
   content: string;
@@ -5,6 +18,7 @@ export interface Message {
   thinking_steps?: string[];
   geopandas_link?: string;
   geojson?: GeoJSONData;
+  map_labels?: MapLabels;
 }
 
 export interface Thread {
@@ -36,4 +50,5 @@ export interface SSEEvent {
   geojson?: GeoJSONData;
   file?: string;
   thinking?: string[];
+  labels?: MapLabels;
 }

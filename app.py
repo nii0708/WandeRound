@@ -20,6 +20,7 @@ from tools.osm import (
     process_overpass,
     get_exec_printed_result,
     get_response,
+    reverse_geocode,
 )
 from tools.route import get_cluster, get_distance_matrix, get_route
 from shapely.geometry import LineString
@@ -66,6 +67,7 @@ class AgentState(TypedDict):
     overpassResponses: List[str]
     overpassStatus: bool
     geopandasData: str
+    mapLabels: Optional[Dict[str, Any]]
     location: Optional[str]
     geocode_data: Optional[Dict]
     error: Optional[str]
@@ -150,9 +152,16 @@ class AgentGraph:
                 return "usual"
 
         def usual(state: AgentState) -> AgentState:
-            human_message = state["messages"][-1]
-            # print(human_message)
-            final_answer = self.llm.invoke(human_message.content)
+            history = state["messages"]
+            system_msg = SystemMessage(
+                content=(
+                    "You are WandeRound, a friendly travel-planning assistant. "
+                    "Use the full conversation so far to give context-aware, "
+                    "natural follow-up answers. Reply in the same language as "
+                    "the user's most recent message."
+                )
+            )
+            final_answer = self.llm.invoke([system_msg, *history])
             return {"finalResponse": final_answer}
 
         def extract_location(state: AgentState) -> AgentState:
@@ -336,6 +345,107 @@ class AgentGraph:
                 return "get_code"
             else:
                 return "usual"
+
+        def generate_map_labels(state: AgentState) -> AgentState:
+            """Build cluster labels from reverse-geocoded area names, plus UI strings via LLM."""
+            file = state.get("geopandasData")
+            if not file:
+                return {"mapLabels": None}
+            try:
+                import geopandas as gpd
+
+                gdf = gpd.read_file(file)
+
+                # Compute centroid per cluster (skip -1 = noise/unclustered)
+                cluster_ids = sorted({int(c) for c in gdf["clust"].dropna().unique()})
+                cluster_centroids: Dict[int, Tuple[float, float]] = {}
+                for cid in cluster_ids:
+                    if cid < 0:
+                        continue
+                    group = gdf[gdf["clust"] == cid]
+                    if group.empty:
+                        continue
+                    centroids = group.geometry.centroid
+                    lat = float(centroids.y.mean())
+                    lon = float(centroids.x.mean())
+                    cluster_centroids[cid] = (lat, lon)
+
+                # Reverse-geocode each cluster centroid. Nominatim asks for ≤1 req/sec.
+                area_names: Dict[int, str] = {}
+                for cid, (lat, lon) in cluster_centroids.items():
+                    name = reverse_geocode(lat, lon)
+                    if name:
+                        area_names[cid] = name
+                    time.sleep(1.1)
+
+                # Deduplicate identical area names by suffixing (e.g. "Malioboro 2")
+                seen_counts: Dict[str, int] = {}
+                cluster_labels: Dict[str, str] = {}
+                for cid in cluster_ids:
+                    if cid < 0:
+                        continue  # filled in by UI string "unclustered"
+                    raw = area_names.get(cid)
+                    if not raw:
+                        cluster_labels[str(cid)] = f"Area {cid}"
+                        continue
+                    seen_counts[raw] = seen_counts.get(raw, 0) + 1
+                    cluster_labels[str(cid)] = (
+                        raw if seen_counts[raw] == 1 else f"{raw} {seen_counts[raw]}"
+                    )
+
+                human_message = state["messages"][-1]
+                user_text = (
+                    human_message.content
+                    if hasattr(human_message, "content")
+                    else str(human_message)
+                )
+
+                # LLM only translates the UI strings to the user's language.
+                ui_prompt = ChatPromptTemplate.from_messages(
+                    [
+                        (
+                            "system",
+                            "You generate short UI strings for an interactive map of points of interest.\n"
+                            "RESPOND IN THE SAME LANGUAGE AS THE USER MESSAGE.\n"
+                            "Return ONLY a valid JSON object — no markdown, no commentary. Shape:\n"
+                            "{{\n"
+                            '  "name": "label for the Name field",\n'
+                            '  "type": "label for the Type/Category field",\n'
+                            '  "address": "label for the Address field",\n'
+                            '  "cluster": "label for the Area field",\n'
+                            '  "unclustered": "label used for points that do not belong to any area",\n'
+                            '  "legendTitle": "short title for the legend, max 2 words",\n'
+                            '  "noName": "placeholder when a place has no name"\n'
+                            "}}\n"
+                            "Keep every label short and human-friendly.",
+                        ),
+                        (
+                            "human",
+                            "User message: {user_text}\n\nGenerate the JSON now.",
+                        ),
+                    ]
+                )
+
+                ui_labels: Dict[str, str] = {}
+                try:
+                    response = self.llm.invoke(
+                        ui_prompt.format_messages(user_text=user_text)
+                    )
+                    content = response.content.strip()
+                    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+                    content = re.sub(r"```(?:json)?", "", content).replace("```", "").strip()
+                    start = content.find("{")
+                    end = content.rfind("}") + 1
+                    if start != -1 and end > start:
+                        ui_labels = json.loads(content[start:end])
+                except Exception as e:
+                    print(f"generate_map_labels UI strings error: {e}")
+
+                labels = {"ui": ui_labels, "clusters": cluster_labels}
+                return {"mapLabels": labels}
+            except Exception as e:
+                print(f"generate_map_labels error: {e}")
+                return {"mapLabels": None}
 
         def get_code(state: AgentState) -> AgentState:
             # (geopandas_link,column,question):
@@ -585,6 +695,7 @@ class AgentGraph:
         workflow.add_node("generate_response", generate_response)
 
         workflow.add_node("execute_code", execute_code)
+        workflow.add_node("generate_map_labels", generate_map_labels)
         workflow.add_node("execute_python", execute_python)
         workflow.add_node("get_code", get_code)
         workflow.add_node("eval_code", eval_code)
@@ -602,8 +713,9 @@ class AgentGraph:
         workflow.add_edge("generate_response", "execute_code")
         workflow.add_conditional_edges(
             "execute_code",
-            lambda state: "get_code" if state.get("overpassStatus") else "usual",
+            lambda state: "generate_map_labels" if state.get("overpassStatus") else "usual",
         )
+        workflow.add_edge("generate_map_labels", "get_code")
 
         workflow.add_edge("get_code", "eval_code")
         workflow.add_edge("eval_code", "execute_python")

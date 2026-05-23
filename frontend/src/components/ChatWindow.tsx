@@ -95,7 +95,9 @@ function MessageBubble({
             </div>
           )}
 
-        {!isUser && msg.geojson && <MapView geojson={msg.geojson} />}
+        {!isUser && msg.geojson && (
+          <MapView geojson={msg.geojson} labels={msg.map_labels} />
+        )}
       </div>
     </div>
   );
